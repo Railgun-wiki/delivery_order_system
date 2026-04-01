@@ -38,6 +38,13 @@
     *   单独维护的一个栈结构数据表。其 `undo_id` 构成了自增栈指针。
     *   当订单被 completed 时，将 `order_id` 压入（INSERT）；当撤销时，查询最大的 `undo_id` 对应记录并弹出（DELETE）。
 
+3.  **operation_logs 表** (新增)：
+    *   `log_id`: 日志流水号，自增。
+    *   `timestamp`: 自动生成的操作时间戳 `CURRENT_TIMESTAMP`。
+    *   `action`: 大写的动作类型枚举 (如 `PLACE_ORDER`, `DISPATCH_ORDER`, `COMPLETE_ORDER`等)。
+    *   `order_id`: 相关联的订单ID。
+    *   `details`: 可选的操作内容或备注记录。
+
 ## 4. 核心接口说明
 *   `place_order(user, restaurant, items)`: 创建新订单，状态设为 `WAITING`，存入数据库。
 *   `dispatch_next_order()`: 从 `orders` 中取出 `status='WAITING'` 且 `order_id` 最小的记录，将状态置为 `CURRENT`（前置检查必须无其他活跃订单）。
@@ -67,6 +74,7 @@
 3.  **requeue_current_order()**: 应对骑手接错单等情况，将 `CURRENT` 订单状态重置置回 `WAITING`。由于 SQLite 的出队是依旧找 `order_id` 最小的行，这不仅使其回到队列，而且会自动**插队回原本该排的最前面**，完美适配现实逻辑。
 4.  **show_completed_orders(restaurant=...)**: 历史记录允许按餐馆名称过滤聚合，适用于商家后台报表。
 5.  **export_orders(file_path)**: 将从下单到销毁的完整订单表导出为本地 `.json` 数据快照。
+6.  **export_operation_logs(file_path)**: 提供下载整个数据库所有动作流程（操作日志流水）的支持。这极大地方便了后期的查账与对账（Audit Trail）。
 
 ## 8. AI Coding 反思
 在系统从“纯内存”向“数据库持久化”演进的过程中有以下体会：

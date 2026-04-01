@@ -162,5 +162,32 @@ class TestDeliveryOrderSystem(unittest.TestCase):
             
         os.remove(export_file) # 清理文件
 
+    def test_export_operation_logs(self):
+        """测试操作日志的录入与快照导出功能"""
+        # 放几笔业务操作触发状态变更
+        self.system.place_order("Ivan", "Pizza Boss", ["Pizza X"])
+        self.system.dispatch_next_order()
+        self.system.complete_current_order("Noted")
+        self.system.undo_last_completion()
+        
+        log_file = "test_operation_logs.json"
+        
+        # 调用暴露的接口测试导出
+        out_msg = self.system.export_operation_logs(log_file)
+        self.assertIn("Exported 4 operation logs", out_msg)
+        
+        self.assertTrue(os.path.exists(log_file))
+        with open(log_file, "r", encoding="utf-8") as f:
+            logs = json.load(f)
+            self.assertEqual(len(logs), 4)
+            # 依次检查日志行为
+            self.assertEqual(logs[0]["action"], "PLACE_ORDER")
+            self.assertEqual(logs[1]["action"], "DISPATCH_ORDER")
+            self.assertEqual(logs[2]["action"], "COMPLETE_ORDER")
+            self.assertEqual(logs[3]["action"], "UNDO_COMPLETION")
+            
+        os.remove(log_file)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

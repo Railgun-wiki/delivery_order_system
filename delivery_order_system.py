@@ -41,7 +41,20 @@ class DeliveryOrderSystem:
                     undo_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_id INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS operation_logs (
+                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    action TEXT,
+                    order_id INTEGER,
+                    details TEXT
+                );
             ''')
+
+    def _log_operation(self, action: str, order_id: int = None, details: str = ""):
+        self.conn.execute(
+            "INSERT INTO operation_logs (action, order_id, details) VALUES (?, ?, ?)",
+            (action, order_id, details)
+        )
 
     def place_order(self, user, restaurant, items):
         with self.conn:
@@ -50,6 +63,7 @@ class DeliveryOrderSystem:
                 (user, restaurant, json.dumps(list(items)))
             )
             order_id = cursor.lastrowid
+            self._log_operation("PLACE_ORDER", order_id, f"User: {user}, Restaurant: {restaurant}")
         return f"Order placed: #{order_id} for {user}"
 
     @property
@@ -76,6 +90,7 @@ class DeliveryOrderSystem:
 
             order_id = waiting['order_id']
             self.conn.execute("UPDATE orders SET status = 'CURRENT' WHERE order_id = ?", (order_id,))
+            self._log_operation("DISPATCH_ORDER", order_id)
         return f"Dispatched order #{order_id}"
 
     def complete_current_order(self, note):
@@ -93,6 +108,7 @@ class DeliveryOrderSystem:
                 (note, next_seq, order_id)
             )
             self.conn.execute("INSERT INTO undo_stack (order_id) VALUES (?)", (order_id,))
+            self._log_operation("COMPLETE_ORDER", order_id, f"Note: {note}")
         return f"Completed order #{order_id}"
 
     def undo_last_completion(self):
@@ -108,6 +124,7 @@ class DeliveryOrderSystem:
             undo_id, order_id = last_undo['undo_id'], last_undo['order_id']
             self.conn.execute("UPDATE orders SET status = 'CURRENT', note = NULL, completion_seq = NULL WHERE order_id = ?", (order_id,))
             self.conn.execute("DELETE FROM undo_stack WHERE undo_id = ?", (undo_id,))
+            self._log_operation("UNDO_COMPLETION", order_id)
         
         return f"Undo success: restored order #{order_id} to current"
 
@@ -149,9 +166,8 @@ class DeliveryOrderSystem:
             if not cur:
                 return "No current order to requeue"
             
-            # Since waiting queue is ordered by order_id, setting it back to WAITING 
-            # will naturally restore it exactly to its previous place in the queue.
             self.conn.execute("UPDATE orders SET status = 'WAITING' WHERE order_id = ?", (cur["order_id"],))
+            self._log_operation("REQUEUE_ORDER", cur["order_id"])
             return f"Order #{cur['order_id']} requeued"
 
     def get_waiting_count(self):
@@ -167,6 +183,7 @@ class DeliveryOrderSystem:
                 return f"Cannot cancel order #{order_id}: status is {cur['status']}"
             
             self.conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
+            self._log_operation("CANCEL_ORDER", order_id)
             return f"Order #{order_id} cancelled"
 
     def export_orders(self, file_path: str):
@@ -187,69 +204,20 @@ class DeliveryOrderSystem:
         
         return f"Exported {len(export_data)} orders to {file_path}"
 
+    def export_operation_logs(self, file_path: str):
+        rows = self.conn.execute("SELECT * FROM operation_logs ORDER BY log_id ASC").fetchall()
+        logs = []
+        for r in rows:
+            logs.append({
+                "log_id": r["log_id"],
+                "timestamp": r["timestamp"],
+                "action": r["action"],
+                "order_id": r["order_id"],
+                "details": r["details"]
+            })
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False, indent=2)
+        
+        return f"Exported {len(logs)} operation logs to {file_path}"
 
-# ----------------------
-# 3 minimal test samples
-# ----------------------
-if __name__ == "__main__":
-    print("=== Test 1: Normal flow ===")
-    s1 = DeliveryOrderSystem()
-    print(s1.place_order("Alice", "Sushi Bar", ["Sushi", "Miso Soup"]))
-    print(s1.place_order("Bob", "Pizza House", ["Pepperoni Pizza"]))
-    print("Waiting:", s1.show_waiting_orders())
-    print(s1.dispatch_next_order())
-    print(s1.complete_current_order("Delivered on time"))
-    print("Completed:", s1.show_completed_orders())
-    print("Waiting:", s1.show_waiting_orders())
-
-    print("\n=== Test 2: Boundary conditions ===")
-    s2 = DeliveryOrderSystem()
-    print(s2.dispatch_next_order())
-    print(s2.complete_current_order("Nothing to complete"))
-    print(s2.undo_last_completion())
-    print("Waiting:", s2.show_waiting_orders())
-    print("Completed:", s2.show_completed_orders())
-
-    print("\n=== Test 3: Undo last completion rule ===")
-    s3 = DeliveryOrderSystem()
-    print(s3.place_order("Cindy", "Burger Town", ["Burger"]))
-    print(s3.dispatch_next_order())
-    print(s3.complete_current_order("Left at door"))
-    print("Completed before undo:", s3.show_completed_orders())
-    print(s3.undo_last_completion())
-    print("Completed after undo:", s3.show_completed_orders())
-    print("Current order after undo:", s3.current_order)
-    print(s3.undo_last_completion())
-
-    print("\n=== Test 4: Extended Features ===")
-    s4 = DeliveryOrderSystem()
-    s4.place_order("David", "Sushi Bar", ["Sashimi", "Cola"])
-    order_id_eve = int(s4.place_order("Eve", "Pizza House", ["Cheese Pizza"]).split("#")[1].split()[0])
-    s4.place_order("Frank", "Sushi Bar", ["Udon Noodle"])
-    
-    print("Waiting count:", s4.get_waiting_count())
-    print("Cancel order Eve:", s4.cancel_waiting_order(order_id_eve))
-    print("Cancel already cancelled:", s4.cancel_waiting_order(order_id_eve))
-    
-    s4.dispatch_next_order()  # Dispatches David
-    print("Requeue David:", s4.requeue_current_order())
-    print("Requeue no order:", s4.requeue_current_order())
-    
-    # David is back in waiting, dispatch him again
-    s4.dispatch_next_order()
-    s4.complete_current_order("Leave at lobby")
-    
-    s4.dispatch_next_order()  # Dispatches Frank (since Eve was cancelled)
-    s4.complete_current_order("Hand delivered")
-    
-    print("Completed from Sushi Bar only:", s4.show_completed_orders(restaurant="Sushi Bar"))
-    print("Exporting:", s4.export_orders("orders_export.json"))
-    
-
-    print("\n=== Time Complexity ===")
-    print("place_order: SQLite Insert O(1)")
-    print("dispatch_next_order: SQLite Select Limit 1 O(1)")
-    print("complete_current_order: SQLite Update + Insert O(1)")
-    print("undo_last_completion: SQLite Update + Delete O(1)")
-    print("show_waiting_orders: SQLite Select O(n)")
-    print("show_completed_orders: SQLite Select O(m)")
