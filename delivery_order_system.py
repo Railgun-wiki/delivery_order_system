@@ -1,4 +1,5 @@
-from collections import deque
+﻿import json
+import sqlite3
 from dataclasses import dataclass
 
 
@@ -19,88 +20,120 @@ class Order:
 
 
 class DeliveryOrderSystem:
-    def __init__(self):
-        # Waiting orders must use deque for O(1) popleft.
-        self.waiting_orders = deque()
-        self.current_order = None
-        # Completed history is append-only list.
-        self.completed_orders = []
-        # Undo stack stores only completion actions for single-step rollback.
-        self.undo_stack = []
-        self.next_order_id = 1
+    def __init__(self, db_path=":memory:"):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._init_db()
+
+    def _init_db(self):
+        with self.conn:
+            self.conn.executescript('''
+                CREATE TABLE IF NOT EXISTS orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user TEXT,
+                    restaurant TEXT,
+                    items TEXT,
+                    status TEXT,
+                    note TEXT,
+                    completion_seq INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS undo_stack (
+                    undo_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER
+                );
+            ''')
 
     def place_order(self, user, restaurant, items):
-        order = Order(
-            order_id=self.next_order_id,
-            user=user,
-            restaurant=restaurant,
-            items=list(items),
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO orders (user, restaurant, items, status) VALUES (?, ?, ?, 'WAITING')",
+                (user, restaurant, json.dumps(list(items)))
+            )
+            order_id = cursor.lastrowid
+        return f"Order placed: #{order_id} for {user}"
+
+    @property
+    def current_order(self):
+        cur = self.conn.execute("SELECT * FROM orders WHERE status = 'CURRENT'").fetchone()
+        if not cur:
+            return None
+        return Order(
+            order_id=cur["order_id"],
+            user=cur["user"],
+            restaurant=cur["restaurant"],
+            items=json.loads(cur["items"])
         )
-        self.next_order_id += 1
-        self.waiting_orders.append(order)
-        return f"Order placed: #{order.order_id} for {user}"
 
     def dispatch_next_order(self):
-        if self.current_order is not None:
-            return (
-                f"Cannot dispatch: current order #{self.current_order.order_id} is not completed yet"
-            )
+        with self.conn:
+            cur = self.conn.execute("SELECT order_id FROM orders WHERE status = 'CURRENT'").fetchone()
+            if cur:
+                return f"Cannot dispatch: current order #{cur['order_id']} is not completed yet"
 
-        if not self.waiting_orders:
-            return "No waiting orders to dispatch"
+            waiting = self.conn.execute("SELECT order_id FROM orders WHERE status = 'WAITING' ORDER BY order_id ASC LIMIT 1").fetchone()
+            if not waiting:
+                return "No waiting orders to dispatch"
 
-        self.current_order = self.waiting_orders.popleft()
-        return f"Dispatched order #{self.current_order.order_id}"
+            order_id = waiting['order_id']
+            self.conn.execute("UPDATE orders SET status = 'CURRENT' WHERE order_id = ?", (order_id,))
+        return f"Dispatched order #{order_id}"
 
     def complete_current_order(self, note):
-        if self.current_order is None:
-            return "No current order to complete"
+        with self.conn:
+            cur = self.conn.execute("SELECT order_id FROM orders WHERE status = 'CURRENT'").fetchone()
+            if not cur:
+                return "No current order to complete"
 
-        completion_record = {
-            "order": self.current_order,
-            "note": note,
-        }
-        self.completed_orders.append(completion_record)
-        self.undo_stack.append(completion_record)
-        done_id = self.current_order.order_id
-        self.current_order = None
-        return f"Completed order #{done_id}"
+            order_id = cur['order_id']
+            seq_row = self.conn.execute("SELECT MAX(completion_seq) as max_seq FROM orders").fetchone()
+            next_seq = (seq_row['max_seq'] or 0) + 1
+
+            self.conn.execute(
+                "UPDATE orders SET status = 'COMPLETED', note = ?, completion_seq = ? WHERE order_id = ?",
+                (note, next_seq, order_id)
+            )
+            self.conn.execute("INSERT INTO undo_stack (order_id) VALUES (?)", (order_id,))
+        return f"Completed order #{order_id}"
 
     def undo_last_completion(self):
-        if not self.undo_stack:
-            return "No completion record to undo"
+        with self.conn:
+            cur = self.conn.execute("SELECT order_id FROM orders WHERE status = 'CURRENT'").fetchone()
+            if cur:
+                return f"Cannot undo now: current order #{cur['order_id']} is in progress"
 
-        if self.current_order is not None:
-            return (
-                f"Cannot undo now: current order #{self.current_order.order_id} is in progress"
-            )
+            last_undo = self.conn.execute("SELECT undo_id, order_id FROM undo_stack ORDER BY undo_id DESC LIMIT 1").fetchone()
+            if not last_undo:
+                return "No completion record to undo"
 
-        last = self.undo_stack.pop()
-        # completed_orders is append-only by design, so the last completed record
-        # must match the undo stack top.
-        self.completed_orders.pop()
-        self.current_order = last["order"]
-        return f"Undo success: restored order #{self.current_order.order_id} to current"
+            undo_id, order_id = last_undo['undo_id'], last_undo['order_id']
+            self.conn.execute("UPDATE orders SET status = 'CURRENT', note = NULL, completion_seq = NULL WHERE order_id = ?", (order_id,))
+            self.conn.execute("DELETE FROM undo_stack WHERE undo_id = ?", (undo_id,))
+        
+        return f"Undo success: restored order #{order_id} to current"
 
     def show_waiting_orders(self):
-        if not self.waiting_orders:
-            return []
-
-        return [order.to_dict() for order in self.waiting_orders]
+        rows = self.conn.execute("SELECT * FROM orders WHERE status = 'WAITING' ORDER BY order_id ASC").fetchall()
+        return [
+            Order(
+                order_id=r["order_id"],
+                user=r["user"],
+                restaurant=r["restaurant"],
+                items=json.loads(r["items"])
+            ).to_dict()
+            for r in rows
+        ]
 
     def show_completed_orders(self):
-        if not self.completed_orders:
-            return []
-
+        rows = self.conn.execute("SELECT * FROM orders WHERE status = 'COMPLETED' ORDER BY completion_seq ASC").fetchall()
         return [
             {
-                "order_id": record["order"].order_id,
-                "user": record["order"].user,
-                "restaurant": record["order"].restaurant,
-                "items": record["order"].items,
-                "note": record["note"],
+                "order_id": r["order_id"],
+                "user": r["user"],
+                "restaurant": r["restaurant"],
+                "items": json.loads(r["items"]),
+                "note": r["note"],
             }
-            for record in self.completed_orders
+            for r in rows
         ]
 
 
@@ -138,9 +171,9 @@ if __name__ == "__main__":
     print(s3.undo_last_completion())
 
     print("\n=== Time Complexity ===")
-    print("place_order: O(1) amortized")
-    print("dispatch_next_order: O(1)")
-    print("complete_current_order: O(1) amortized")
-    print("undo_last_completion: O(1)")
-    print("show_waiting_orders: O(n)  (n = waiting order count)")
-    print("show_completed_orders: O(m) (m = completed order count)")
+    print("place_order: SQLite Insert O(1)")
+    print("dispatch_next_order: SQLite Select Limit 1 O(1)")
+    print("complete_current_order: SQLite Update + Insert O(1)")
+    print("undo_last_completion: SQLite Update + Delete O(1)")
+    print("show_waiting_orders: SQLite Select O(n)")
+    print("show_completed_orders: SQLite Select O(m)")
