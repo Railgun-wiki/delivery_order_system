@@ -34,6 +34,61 @@ class TestDeliveryOrderSystem(unittest.TestCase):
         self.assertEqual(self.system.dispatch_next_order(), "No waiting orders to dispatch")
         self.assertEqual(self.system.complete_current_order("Nothing"), "No current order to complete")
         self.assertEqual(self.system.undo_last_completion(), "No completion record to undo")
+        
+        # 测试：取消不存在的订单
+        self.assertIn("does not exist", self.system.cancel_waiting_order(999))
+        
+        # 测试：空状态下重排队
+        self.assertEqual(self.system.requeue_current_order(), "No current order to requeue")
+        
+        self.system.place_order("Alice", "Shop A", ["Item 1"])
+        self.system.dispatch_next_order()
+        
+        # 测试：取消处理中 (CURRENT) 的订单
+        self.assertIn("Cannot cancel order #1: status is CURRENT", self.system.cancel_waiting_order(1))
+        
+        self.system.complete_current_order("Done")
+        
+        # 测试：取消已完成 (COMPLETED) 的订单
+        self.assertIn("Cannot cancel order #1: status is COMPLETED", self.system.cancel_waiting_order(1))
+
+    def test_state_consistency(self):
+        """验证数据库层面的状态机一致性保证（任何时刻最多只能有1个CURRENT订单）"""
+        for i in range(5):
+            self.system.place_order(f"User{i}", "Sushi Bar", ["Sushi"])
+            
+        def get_current_count():
+            return self.system.conn.execute("SELECT COUNT(*) FROM orders WHERE status = 'CURRENT'").fetchone()[0]
+
+        # 初始无CURRENT订单
+        self.assertEqual(get_current_count(), 0)
+        self.assertEqual(self.system.get_waiting_count(), 5)
+        
+        # 第一次派发，CURRENT升为1
+        self.system.dispatch_next_order()
+        self.assertEqual(get_current_count(), 1)
+        self.assertEqual(self.system.get_waiting_count(), 4)
+        
+        # 尝试再次派发，应该被拒绝，验证状态保持一致不出现2个CURRENT
+        self.assertIn("Cannot dispatch", self.system.dispatch_next_order())
+        self.assertEqual(get_current_count(), 1)
+        
+        # 完成订单，CURRENT归0
+        self.system.complete_current_order("Ok1")
+        self.assertEqual(get_current_count(), 0)
+        self.assertEqual(len(self.system.show_completed_orders()), 1)
+        
+        # 撤销，CURRENT重回1
+        self.system.undo_last_completion()
+        self.assertEqual(get_current_count(), 1)
+        self.assertEqual(len(self.system.show_completed_orders()), 0)
+        
+        # 重排队，CURRENT彻底归0，等待重回5
+        self.assertIn("requeued", self.system.requeue_current_order())
+        self.assertEqual(get_current_count(), 0)
+        self.assertEqual(self.system.get_waiting_count(), 5)
+        self.assertEqual(self.system.complete_current_order("Nothing"), "No current order to complete")
+        self.assertEqual(self.system.undo_last_completion(), "No completion record to undo")
 
     def test_undo_and_requeue_rules(self):
         """测试扩展状态机流转：取消 -> 重排队 -> 新接单 -> 尝试撤销旧单阻止 -> 强制撤销恢复"""
