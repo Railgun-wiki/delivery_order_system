@@ -123,8 +123,15 @@ class DeliveryOrderSystem:
             for r in rows
         ]
 
-    def show_completed_orders(self):
-        rows = self.conn.execute("SELECT * FROM orders WHERE status = 'COMPLETED' ORDER BY completion_seq ASC").fetchall()
+    def show_completed_orders(self, restaurant: str = None):
+        query = "SELECT * FROM orders WHERE status = 'COMPLETED'"
+        params = ()
+        if restaurant:
+            query += " AND restaurant = ?"
+            params = (restaurant,)
+        query += " ORDER BY completion_seq ASC"
+        
+        rows = self.conn.execute(query, params).fetchall()
         return [
             {
                 "order_id": r["order_id"],
@@ -135,6 +142,50 @@ class DeliveryOrderSystem:
             }
             for r in rows
         ]
+
+    def requeue_current_order(self):
+        with self.conn:
+            cur = self.conn.execute("SELECT order_id FROM orders WHERE status = 'CURRENT'").fetchone()
+            if not cur:
+                return "No current order to requeue"
+            
+            # Since waiting queue is ordered by order_id, setting it back to WAITING 
+            # will naturally restore it exactly to its previous place in the queue.
+            self.conn.execute("UPDATE orders SET status = 'WAITING' WHERE order_id = ?", (cur["order_id"],))
+            return f"Order #{cur['order_id']} requeued"
+
+    def get_waiting_count(self):
+        row = self.conn.execute("SELECT COUNT(*) as cnt FROM orders WHERE status = 'WAITING'").fetchone()
+        return row["cnt"]
+
+    def cancel_waiting_order(self, order_id: int):
+        with self.conn:
+            cur = self.conn.execute("SELECT status FROM orders WHERE order_id = ?", (order_id,)).fetchone()
+            if not cur:
+                return f"Order #{order_id} does not exist"
+            if cur["status"] != "WAITING":
+                return f"Cannot cancel order #{order_id}: status is {cur['status']}"
+            
+            self.conn.execute("UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?", (order_id,))
+            return f"Order #{order_id} cancelled"
+
+    def export_orders(self, file_path: str):
+        rows = self.conn.execute("SELECT * FROM orders ORDER BY order_id ASC").fetchall()
+        export_data = []
+        for r in rows:
+            export_data.append({
+                "order_id": r["order_id"],
+                "user": r["user"],
+                "restaurant": r["restaurant"],
+                "items": json.loads(r["items"]),
+                "status": r["status"],
+                "note": r["note"],
+            })
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=2)
+        
+        return f"Exported {len(export_data)} orders to {file_path}"
 
 
 # ----------------------
@@ -169,6 +220,31 @@ if __name__ == "__main__":
     print("Completed after undo:", s3.show_completed_orders())
     print("Current order after undo:", s3.current_order)
     print(s3.undo_last_completion())
+
+    print("\n=== Test 4: Extended Features ===")
+    s4 = DeliveryOrderSystem()
+    s4.place_order("David", "Sushi Bar", ["Sashimi", "Cola"])
+    order_id_eve = int(s4.place_order("Eve", "Pizza House", ["Cheese Pizza"]).split("#")[1].split()[0])
+    s4.place_order("Frank", "Sushi Bar", ["Udon Noodle"])
+    
+    print("Waiting count:", s4.get_waiting_count())
+    print("Cancel order Eve:", s4.cancel_waiting_order(order_id_eve))
+    print("Cancel already cancelled:", s4.cancel_waiting_order(order_id_eve))
+    
+    s4.dispatch_next_order()  # Dispatches David
+    print("Requeue David:", s4.requeue_current_order())
+    print("Requeue no order:", s4.requeue_current_order())
+    
+    # David is back in waiting, dispatch him again
+    s4.dispatch_next_order()
+    s4.complete_current_order("Leave at lobby")
+    
+    s4.dispatch_next_order()  # Dispatches Frank (since Eve was cancelled)
+    s4.complete_current_order("Hand delivered")
+    
+    print("Completed from Sushi Bar only:", s4.show_completed_orders(restaurant="Sushi Bar"))
+    print("Exporting:", s4.export_orders("orders_export.json"))
+    
 
     print("\n=== Time Complexity ===")
     print("place_order: SQLite Insert O(1)")
