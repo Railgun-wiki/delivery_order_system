@@ -1,4 +1,21 @@
 from collections import deque
+from dataclasses import dataclass
+
+
+@dataclass
+class Order:
+    order_id: int
+    user: str
+    restaurant: str
+    items: list
+
+    def to_dict(self):
+        return {
+            "order_id": self.order_id,
+            "user": self.user,
+            "restaurant": self.restaurant,
+            "items": self.items,
+        }
 
 
 class DeliveryOrderSystem:
@@ -13,25 +30,27 @@ class DeliveryOrderSystem:
         self.next_order_id = 1
 
     def place_order(self, user, restaurant, items):
-        order = {
-            "order_id": self.next_order_id,
-            "user": user,
-            "restaurant": restaurant,
-            "items": list(items),
-        }
+        order = Order(
+            order_id=self.next_order_id,
+            user=user,
+            restaurant=restaurant,
+            items=list(items),
+        )
         self.next_order_id += 1
         self.waiting_orders.append(order)
-        return f"Order placed: #{order['order_id']} for {user}"
+        return f"Order placed: #{order.order_id} for {user}"
 
     def dispatch_next_order(self):
         if self.current_order is not None:
-            return f"Cannot dispatch: current order #{self.current_order['order_id']} is not completed yet"
+            return (
+                f"Cannot dispatch: current order #{self.current_order.order_id} is not completed yet"
+            )
 
         if not self.waiting_orders:
             return "No waiting orders to dispatch"
 
         self.current_order = self.waiting_orders.popleft()
-        return f"Dispatched order #{self.current_order['order_id']}"
+        return f"Dispatched order #{self.current_order.order_id}"
 
     def complete_current_order(self, note):
         if self.current_order is None:
@@ -43,7 +62,7 @@ class DeliveryOrderSystem:
         }
         self.completed_orders.append(completion_record)
         self.undo_stack.append(completion_record)
-        done_id = self.current_order["order_id"]
+        done_id = self.current_order.order_id
         self.current_order = None
         return f"Completed order #{done_id}"
 
@@ -53,7 +72,7 @@ class DeliveryOrderSystem:
 
         if self.current_order is not None:
             return (
-                f"Cannot undo now: current order #{self.current_order['order_id']} is in progress"
+                f"Cannot undo now: current order #{self.current_order.order_id} is in progress"
             )
 
         last = self.undo_stack.pop()
@@ -61,21 +80,13 @@ class DeliveryOrderSystem:
         # must match the undo stack top.
         self.completed_orders.pop()
         self.current_order = last["order"]
-        return f"Undo success: restored order #{self.current_order['order_id']} to current"
+        return f"Undo success: restored order #{self.current_order.order_id} to current"
 
     def show_waiting_orders(self):
         if not self.waiting_orders:
             return []
 
-        return [
-            {
-                "order_id": order["order_id"],
-                "user": order["user"],
-                "restaurant": order["restaurant"],
-                "items": order["items"],
-            }
-            for order in self.waiting_orders
-        ]
+        return [order.to_dict() for order in self.waiting_orders]
 
     def show_completed_orders(self):
         if not self.completed_orders:
@@ -83,10 +94,10 @@ class DeliveryOrderSystem:
 
         return [
             {
-                "order_id": record["order"]["order_id"],
-                "user": record["order"]["user"],
-                "restaurant": record["order"]["restaurant"],
-                "items": record["order"]["items"],
+                "order_id": record["order"].order_id,
+                "user": record["order"].user,
+                "restaurant": record["order"].restaurant,
+                "items": record["order"].items,
                 "note": record["note"],
             }
             for record in self.completed_orders
