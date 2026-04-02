@@ -3,3 +3,4 @@ __pycache__/
 logs.json
 orders_export.json
 chat.json
+*.tar.gz
