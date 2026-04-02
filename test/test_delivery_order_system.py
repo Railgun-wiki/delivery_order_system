@@ -1,7 +1,11 @@
 import unittest
 import json
 import os
-from delivery_order_system import DeliveryOrderSystem
+import sys
+
+# 添加 src 目录到被引用的路径，以便读取 delivery_order_system
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.delivery_order_system import DeliveryOrderSystem
 
 class TestDeliveryOrderSystem(unittest.TestCase):
     def setUp(self):

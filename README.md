@@ -20,8 +20,8 @@
 这种设计**既消除了部署外部数据库服务的麻烦（支持 `:memory:` 纯内存或本地 `.db` 文件持久化），又获得了高并发下关系型数据库强力的状态锁及复杂的 SQL 报表检索支持**。操作的时间复杂度均被压低至 `O(1)` 或完全利用索引加速。
 
 有关深度详细的状态机流转设计、DTO 解析及选型理由，请参阅：
-*   👉 **[详细系统设计文档 (design.md)](design.md)**
-*   👉 **[系统架构演化与选型对比 (architecture_comparison.md)](architecture_comparison.md)**
+*   👉 **[详细系统设计文档 (design.md)](doc/design.md)**
+*   👉 **[系统架构演化与选型对比 (architecture_comparison.md)](doc/architecture_comparison.md)**
 
 ## 🚀 快速开始 (Quick Start)
 
@@ -30,8 +30,10 @@
 *   无其他第三方环境/库配置要求。
 
 ### 接入演示
+可以直接运行根目录的 `main.py` 得到一个完整的操作演示。或者您可以按照下方模块化调用：
+
 ```python
-from delivery_order_system import DeliveryOrderSystem
+from src.delivery_order_system import DeliveryOrderSystem
 
 # 初始化调度系统 (采用内存数据库，也可传入 db_path="app.db" 进行文件持久化)
 system = DeliveryOrderSystem(db_path=":memory:")
@@ -59,5 +61,5 @@ print("等待单数:", system.get_waiting_count())
 在项目根目录下执行以下命令以运行单元测试：
 
 ```bash
-python -m unittest test_delivery_order_system.py -v
+python test/test_delivery_order_system.py -v
 ```

@@ -1,1 +1,5 @@
 __pycache__/
+*.db
+logs.json
+orders_export.json
+chat.json
