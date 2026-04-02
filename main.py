@@ -9,7 +9,7 @@ from src.delivery_order_system import DeliveryOrderSystem
 def main():
     print("=== 外卖订单派发系统初始化 ===")
     # 指定一个本地文件数据库
-    db_path = "delivery_orders.db"
+    db_path = "data/delivery_orders.db"
     system = DeliveryOrderSystem(db_path)
     
     print("\n--- 1. 模拟下单 ---")
@@ -28,7 +28,7 @@ def main():
     print(system.undo_last_completion())
     
     print("\n--- 此后可以查看操作日志 ---")
-    system.export_operation_logs("logs.json")
+    system.export_operation_logs("data/logs.json")
     print("写入完成: logs.json")
 
 if __name__ == "__main__":

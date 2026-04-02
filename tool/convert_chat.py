@@ -5,7 +5,7 @@ import os
 def convert():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     input_file = os.path.join(base_dir, 'chat.json')
-    output_file = os.path.join(base_dir, 'doc', 'chat_exported.md')
+    output_file = os.path.join(base_dir, 'doc', 'ai-chat-history.md')
 
     try:
         with open(input_file, 'r', encoding='utf-8') as f:

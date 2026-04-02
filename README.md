@@ -22,6 +22,8 @@
 有关深度详细的状态机流转设计、DTO 解析及选型理由，请参阅：
 *   👉 **[详细系统设计文档 (design.md)](doc/design.md)**
 *   👉 **[系统架构演化与选型对比 (architecture_comparison.md)](doc/architecture_comparison.md)**
+*   👉 **[AI设计对话历史 (ai-chat-history.md)](doc/ai-chat-history.md)**
+
 
 ## 🚀 快速开始 (Quick Start)
 

@@ -120,20 +120,20 @@
 
 ## 7. 扩展功能说明
 为应对外卖业务的实际痛点，在原有核心功能基础上扩展：
-1.  **get_waiting_count()**: 直接利用 DBMS 的 \COUNT(*)\ 聚合进行等待数量统计。
-2.  **cancel_waiting_order(order_id)**: 允许软删除（\CANCELLED\），并拦截对“已开始处理”或“已不存在”订单的非法取消。
-3.  **requeue_current_order()**: 应对骑手接错单等情况，将 \CURRENT\ 订单状态重置置回 \WAITING\。由于 SQLite 的出队是依旧找 \order_id\ 最小的行，这不仅使其回到队列，而且会自动**插队回原本该排的最前面**，完美适配现实逻辑。
+1.  **get_waiting_count()**: 直接利用 DBMS 的 `COUNT(*)` 聚合进行等待数量统计。
+2.  **cancel_waiting_order(order_id)**: 允许软删除（`CANCELLED`），并拦截对“已开始处理”或“已不存在”订单的非法取消。
+3.  **requeue_current_order()**: 应对骑手接错单等情况，将 `CURRENT` 订单状态重置置回 `WAITING`。由于 SQLite 的出队是依旧找 `order_id` 最小的行，这不仅使其回到队列，而且会自动**插队回原本该排的最前面**，完美适配现实逻辑。
 4.  **show_completed_orders(restaurant=...)**: 历史记录允许按餐馆名称过滤聚合，适用于商家后台报表。
-5.  **export_orders(file_path)**: 将从下单到销毁的完整订单表导出为本地 \.json\ 数据快照。
+5.  **export_orders(file_path)**: 将从下单到销毁的完整订单表导出为本地 `.json` 数据快照。
 6.  **export_operation_logs(file_path)**: 提供下载整个数据库所有动作流程（操作日志流水）的支持。这极大地方便了后期的查账与对账（Audit Trail）。
 
-### 7.1 附加功能复杂度分析
-1. **get_waiting_count()**：\O(1)\。由底层数据库索引直接返回聚合统计。
-2. **cancel_waiting_order()**：\O(1)\。单条记录的主键索引点查与修改。
-3. **requeue_current_order()**：\O(1)\。不发生数组位移，直接修改单条状态即可插队回队首。
-4. **show_completed_orders()**：\O(M)\ (M为命中匹配数)。查询计算均在数据库层完成过滤。
-5. **export_orders()**：\O(N)\ (N为数据总量)。线性遍历全部订单实体写入文件。
-6. **export_operation_logs()**：\O(L)\ (L为日志总行数)。线性遍历全量日志信息流。
+### 附加功能复杂度分析
+1. **get_waiting_count()**：`O(1)`。由底层数据库索引直接返回聚合统计。
+2. **cancel_waiting_order()**：`O(1)`。单条记录的主键索引点查与修改。
+3. **requeue_current_order()**：`O(1)`。不发生数组位移，直接修改单条状态即可插队回队首。
+4. **show_completed_orders()**：`O(M)` (M为命中匹配数)。查询计算均在数据库层完成过滤。
+5. **export_orders()**：`O(N)` (N为数据总量)。线性遍历全部订单实体写入文件。
+6. **export_operation_logs()**：`O(L)` (L为日志总行数)。线性遍历全量日志信息流。
 
 ## 8. AI 使用说明
 
