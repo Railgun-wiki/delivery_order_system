@@ -11,19 +11,6 @@
 *   支持查询当前仍在等待的订单明细，以及已完成的订单历史。
 
 ## 2. 系统状态与操作
-
-订单在系统中的生命周期包含以下基本状态：
-*   **WAITING (等待中)**：刚下单的初始状态或被重新排队的状态。
-*   **CURRENT (处理中)**：由系统派发，当前唯一正在被处理的订单状态。
-*   **COMPLETED (已完成)**：派送完成，记录完成顺序和备注。
-*   **CANCELLED (已取消)**：新增的扩展状态，处于等待中的订单被用户手动取消。
-
-操作主要围绕状态机的跃迁：
-`WAITING` -> (dispatch) -> `CURRENT` -> (complete) -> `COMPLETED`
-`COMPLETED` -> (undo) -> `CURRENT`
-`CURRENT` -> (requeue) -> `WAITING`
-`WAITING` -> (cancel) -> `CANCELLED`
-
 系统作为外卖订单的中央调度核心，从宏观维度的操作模块与流转机制如下：
 
 *   **订单接入枢纽 (Order Intake)**：
@@ -35,45 +22,78 @@
 *   **状态机干预与人工纠偏 (Intervention & Correction)**：
     *   *业务顺行*：支持正常指派与完结（`complete`），并且记录处理日志与完结备注。
     *   *业务逆行*：面对因操作导致的突变例外，提供时间状态倒转机能。可以通过撤销（`undo`）在系统层面回撤上一次动作至现场；或者通过重入队指令（`requeue`）使得正在被激活送货的动作中止，订单将保留初始的超高优先级重新打入队列端接受下一轮公平派遣。
-*   **深水位行为审计追溯 (Audit & Operations Traceability)**：
+*   **行为审计追溯 (Audit & Operations Traceability)**：
     *   统筹动作影响变更。不管是队列的前进还是人工让状态后退干预，一切导致引擎数据和队列变道的操作事件都不会“无痕消失”，系统都会统一写入并维系一个追踪流水（`operation_logs`）。这使得任何状态机跃迁完全可证可查。
 
-## 3. 系统架构与演进图谱 (Architecture & Evolution)
+订单在系统中的生命周期包含以下基本状态：
+*   **WAITING (等待中)**：刚下单的初始状态或被重新排队的状态。
+*   **CURRENT (处理中)**：由系统派发，当前唯一正在被处理的订单状态。
+*   **COMPLETED (已完成)**：派送完成，记录完成顺序和备注。
+*   **CANCELLED (已取消)**：新增的扩展状态，处于等待中的订单被用户手动取消。
 
-由于系统经历了从“纯原生线性结构 (`deque`)”到“嵌入式关系型数据库 (`SQLite`)”的底座重构，系统的抗压性、复杂检索支持与断电持久化能力获得了质的飞越，同时没有改变任何对外暴露的数据结构契约（接口侧完全零入侵）。
+操作主要围绕状态机的变化：
+`WAITING` -> (dispatch) -> `CURRENT` -> (complete) -> `COMPLETED`
+`COMPLETED` -> (undo) -> `CURRENT`
+`CURRENT` -> (requeue) -> `WAITING`
+`WAITING` -> (cancel) -> `CANCELLED`
 
-### 3.1 核心功能迭代与架构重塑里程碑 (Git History)
-从项目的初期内存原型到最终工程化脱敏，以下是项目演化中最重要的关键变迁记录：
+## 3. 系统架构与迭代
+系统经历了从“纯原生线性结构 (`deque`)”到“嵌入式关系型数据库 (`SQLite`)”的重构，系统的抗压性、复杂检索支持与断电持久化能力获得了质的飞越，同时没有改变任何对外暴露的数据结构接口。
+
+### 系统设计思路和过程
+
+1. **V1：基于原生数据结构的内存版系统**。参考课程早期设计与提示词，采用 Python 内置数据结构实现
+* 订单流水线严格遵循 FIFO 规则，采用 `collections.deque` 结构
+* 撤销操作 (Undo) 针对最后完成的订单进行回退，符合 LIFO 栈特性，采用原生 `list` 维护
+* 普通历史订单与记录暂无复杂的进出读写约束，用 `list` 直接保存
+* **架构问题**：数据断电即清空，难以从容应对高并发需求；在复杂检索场景下性能低下，线程极易因全表遍历而阻塞，高单量时内存开销及 GC 压力巨大
+
+2. **V2：面向对象的数据封装抽象**。将第一版中原生的字典和松散字符串进一步重构为封装完善的 class (`Order`)。
+* 彻底解决了第一版中数据载体难以拓展业务字段功能的问题
+* 相较于结构化字符串，面向对象的形式赋予了系统极强的层级可读性与操作便利性，实现了行为与数据的标准统一
+
+3. **V3：引入互联网标准的分布式高并发架构**。尝试采用业界经典的“消息队列 + 数据库 + 缓存的三板斧来重构以追求效率与高可用。
+* **消息队列采用 RabbitMQ**：利用其完善的权限管理体系和高可靠性控制上游订单流入
+* **主数据库采用全世界最好的数据库 PostgreSQL**：借助其卓越的 SQL 复杂查询特性和安全性保障订单数据的终态落地，不采用BUG巨多的MySQL
+* **缓存层 Redis**：实现读写热点数据的高频读取效率
+* **架构问题**：MQ 不支持随机读写，导致“撤回(Undo)”、“条件筛选取消”等复杂调度依然需要强依赖底层数据库；整体方案严重超出了当前场景范畴，实现成本极高昂
+
+4. **V4：One Size Fits All 的纯数据库架构设计** 发现，仅仅围绕纯关系型数据库即可优雅实现队列、栈以及更多功能 (成为CRUD工程师)
+* 极致的业务可拓展能力，所有的业务逻辑都可以下放至数据库用 SQL 约束解决
+* 几乎一劳永逸地化解了多并发下复杂状态流转的数据强一致性和死锁问题
+* 内核选用极其轻量强大的 `SQLite`，既兼容零配置内存运行极速测试，也支持随时落盘本地文件。它最终成为本工程中最务实且高性能的底座选型
+
+### 核心功能迭代 (Git History)
+以下是项目演化中最重要的关键变迁记录：
 *   **[`c0e32c0`]** `First Commit`：基于 Python 内存中 `collections.deque` 和 `list` 实现的最基础先入先出功能队列原型。
 *   **[`a15f27e`]** `Refactor DeliveryOrderSystem to use Order dataclass`：引入了标准化对象的底层 `Order` 数据封装结构模型，保障外部消费数据的一致性。
-*   **[`41b4b96`]** `Refactor to use SQLite for persistence`：**[重大底层重构]** 舍弃内存容器，替换为嵌入式 `sqlite3`。奠定强状态并发隔离和防丢失基础，为后续所有高性能查询扩展留出通道。
-*   **[`a69a444`]** `Add new features: requeue, count, filter...`：得益于切换到 SQLite，轻松扩展了极高开销的业务痛点逻辑（任意穿透过滤取消订单、秒级计数与重排队）。
+*   **[`41b4b96`]** `Refactor to use SQLite for persistence`：**[底层重构]** 舍弃内存容器，替换为嵌入式 `sqlite3`。奠定强状态并发隔离和防丢失基础，为后续所有高性能查询扩展留出通道。
+*   **[`a69a444`]** `Add new features: requeue, count, filter...`：**[引入数项功能更新]** 得益于切换到 SQLite，轻松扩展了极高开销的业务痛点逻辑（任意穿透过滤取消订单、秒级计数与重排队）。
 *   **[`c3d0b4e`]** & **[`573523f`]** `extract tests to a separate unittest module` & `add boundary and DB state...`：将内置试探代码正式抽离为专注防御的自动化 `unittest` 防线测试体系。专门对“状态机空转”、“并发撤销”等深限反例进行严格爆破。
-*   **[`192623d`]** `feat: add database operation logging`：**[重大审计升级]** 为系统嵌入所有状态流转与逆行的“探针”。引入独立追踪大表 `operation_logs` 固化操作链历史，为对账防篡改留痕。
-*   **[`e63be46`]** `refactor: restructure directories, add main.py...`：脱离黑盒脚本形态，全面按照真实标准工程划分结构目录 (`src/`, `test/`, `doc/` 等)，交付终版架构。
+*   **[`192623d`]** `feat: add database operation logging`：**[引入审计功能]** 为系统嵌入所有状态流转与逆行的“探针”。引入独立追踪大表 `operation_logs` 固化操作链历史，为对账防篡改留痕。
+*   **[`e63be46`]** `refactor: restructure directories, add main.py...`：全面按照真实标准工程划分结构目录 (`src/`, `test/`, `doc/` 等)，交付终版架构。
 
-### 3.2 数据传输对象层 (Data Transfer Object, DTO)
+### 数据传输对象层 (Data Transfer Object, DTO)
 系统面向外部呈现统一的数据交互载体。使用了 Python 现代特性的 `@dataclass` 装饰器，构建了防重载的 `Order` 物理类。
 *   内部强制映射包含 `order_id`、`user`、`restaurant`、`items` 等核心字段集。
 *   利用自带行为约束的序列化方法 `to_dict()`，将复杂的数据库数据向外呈现出 JSON 友好的纯净形式，阻断了内存内底层游标信息与业务展示层的串流风险。
 
-### 3.3 关系型核心底表模型 (The Core SQL Schema)
-业务状态下沉到 SQLite 的跨领域表管理之中，使得单维数据检索和跨维数据的复杂运算（如 `LIMIT` 或 数量统计）都具备效能。当前切分为三大业务分表：
+### 存储结构 (SQLite)
+为了支持后期复杂的条件查询、计数以及数据持久化，改用 SQLite 数据库 (运行于内存或数据库文件)：
+1.  **orders 表**：
+    *   `order_id`: 主键，自增。自然形成了下单时间的先后顺序。
+    *   `status`: 文本枚举 (`WAITING`, `CURRENT`, `COMPLETED`, `CANCELLED`)。
+    *   `completion_seq`: 订单完成的具体次序（应对乱序完成和撤销保证正确的历史排序）。
+2.  **undo_stack 表**：
+    *   单独维护的一个栈结构数据表。其 `undo_id` 构成了自增栈指针。
+    *   当订单被 completed 时，将 `order_id` 压入（INSERT）；当撤销时，查询最大的 `undo_id` 对应记录并弹出（DELETE）。
 
-**1. `orders` 核心实体表 (Source of Truth)**
-统筹全量订单数据的存活期：
-*   `order_id` [PK, Auto-Increment]: 天然形成的递增序列时间主键，构成了系统判定哪个订单等待最久（FIFO）的绝对提取指标。
-*   `status` [VARCHAR]: 系统核心运行态的枚举 (`WAITING`, `CURRENT`, `COMPLETED`, `CANCELLED`)，承载一切拦截和派单查询。
-*   `completion_seq` [INT]: 订单完成的次序锚点，用于应对跨时间线乱序干预（人工重排队等）下维持绝对唯一的结账先后次序。
-
-**2. `undo_stack` 防火墙撤销大顶栈 (Undo Stack Table)**
-独立解耦的一个存放“后悔药”指针日志的倒退时间栈表：
-*   `undo_id` [PK, Auto-Increment]: 利用这列主键的自增递进性，直接形成了一个时间流向上的“栈顶”。
-*   系统在 `complete` 之后向其塞入单号指针 `INSERT` 面包屑；而在撤回触发时，始终瞄准 `MAX(undo_id)` 锁定并强硬回退弹出（`DELETE`）。
-
-**3. `operation_logs` 行为探针与审计深水区 (Audit Logging Table)**
-*   日志流水 `log_id` 搭配自动发生时刻键 `CURRENT_TIMESTAMP` 实录动作微秒锚点。
-*   将大写的常态动作类型（`action` 诸如 `PLACE_ORDER`, `CANCEL_ORDER` 等）硬写入盘。这使得即便数据库的状态机被“人工回溯”回了初始态，系统中所有的干预事件流线也会形成不灭的历史账本供后续对账纠错。
+3.  **operation_logs 表** ：
+    *   `log_id`: 日志流水号，自增。
+    *   `timestamp`: 自动生成的操作时间戳 `CURRENT_TIMESTAMP`。
+    *   `action`: 大写的动作类型枚举 (如 `PLACE_ORDER`, `DISPATCH_ORDER`, `COMPLETE_ORDER`等)。
+    *   `order_id`: 相关联的订单ID。
+    *   `details`: 可选的操作内容或备注记录。
 
 ## 4. 核心接口说明
 *   `place_order(user, restaurant, items)`: 创建新订单，状态设为 `WAITING`，存入数据库。
@@ -90,7 +110,7 @@
 *   **show_waiting_orders**: `O(N)`，需遍历 N 个等待中的订单并进行 JSON 解析和对象映射。
 *   **show_completed_orders**: `O(M)`，遍历 M 个已完成且符合条件的订单。
 
-## 6. 边界情况与测试设计 (Edge Cases & Safety)
+## 6. 边界情况与测试设计
 在设计与代码实现中，引入了 `test_delivery_order_system.py` 通过 7 个离离的测试用例严密校验了如下系统边界与异常防御机制：
 1.  **空队列盲调防御 (Empty Queue Dispatch)**：队列无 `WAITING` 订单时，引擎调用 `dispatch` 会发生软拦截（Soft Reject），安全返回异常提示而不引发系统崩溃或越界错误。
 2.  **空指针完成防御 (Dangling Complete)**：当前不存在活动状态的 `CURRENT` 订单时调用 `complete`，系统会抛出异常提示，防止将虚无操作计入完成数据库。
@@ -100,12 +120,20 @@
 
 ## 7. 扩展功能说明
 为应对外卖业务的实际痛点，在原有核心功能基础上扩展：
-1.  **get_waiting_count()**: `O(1)` 直接利用 DBMS 的 `COUNT(*)` 聚合进行等待数量统计。
-2.  **cancel_waiting_order(order_id)**: 允许软删除（`CANCELLED`），并拦截对“已开始处理”或“已不存在”订单的非法取消。
-3.  **requeue_current_order()**: 应对骑手接错单等情况，将 `CURRENT` 订单状态重置置回 `WAITING`。由于 SQLite 的出队是依旧找 `order_id` 最小的行，这不仅使其回到队列，而且会自动**插队回原本该排的最前面**，完美适配现实逻辑。
+1.  **get_waiting_count()**: 直接利用 DBMS 的 \COUNT(*)\ 聚合进行等待数量统计。
+2.  **cancel_waiting_order(order_id)**: 允许软删除（\CANCELLED\），并拦截对“已开始处理”或“已不存在”订单的非法取消。
+3.  **requeue_current_order()**: 应对骑手接错单等情况，将 \CURRENT\ 订单状态重置置回 \WAITING\。由于 SQLite 的出队是依旧找 \order_id\ 最小的行，这不仅使其回到队列，而且会自动**插队回原本该排的最前面**，完美适配现实逻辑。
 4.  **show_completed_orders(restaurant=...)**: 历史记录允许按餐馆名称过滤聚合，适用于商家后台报表。
-5.  **export_orders(file_path)**: 将从下单到销毁的完整订单表导出为本地 `.json` 数据快照。
+5.  **export_orders(file_path)**: 将从下单到销毁的完整订单表导出为本地 \.json\ 数据快照。
 6.  **export_operation_logs(file_path)**: 提供下载整个数据库所有动作流程（操作日志流水）的支持。这极大地方便了后期的查账与对账（Audit Trail）。
+
+### 7.1 附加功能复杂度分析
+1. **get_waiting_count()**：\O(1)\。由底层数据库索引直接返回聚合统计。
+2. **cancel_waiting_order()**：\O(1)\。单条记录的主键索引点查与修改。
+3. **requeue_current_order()**：\O(1)\。不发生数组位移，直接修改单条状态即可插队回队首。
+4. **show_completed_orders()**：\O(M)\ (M为命中匹配数)。查询计算均在数据库层完成过滤。
+5. **export_orders()**：\O(N)\ (N为数据总量)。线性遍历全部订单实体写入文件。
+6. **export_operation_logs()**：\O(L)\ (L为日志总行数)。线性遍历全量日志信息流。
 
 ## 8. AI 使用说明
 
@@ -120,12 +148,12 @@
 
 **涉及流程**:
 1.  **需求分析与原型设计**：基于 `collections.deque` 实现内存版的基础队列系统。
-2.  **架构演进与重构**：通过对话探讨持久化与扩展性瓶颈，平滑迁移至 SQLite 数据库方案。
+2.  **架构迭代与重构**：通过对话探讨持久化与扩展性瓶颈，平滑迁移至 SQLite 数据库方案。
 3.  **核心业务编码与防御性编程**：梳理状态机流转跃迁，加入大量的边界拦截和异常防护。
 4.  **测试驱动与分离**：将测试逻辑从主程序剥离为 `test/test_delivery_order_system.py` 自动化套件。
-5.  **辅助工程化与交付**：编写项目 README、自动化聊天导出脱敏工具 (`tool/convert_chat.py`)，整理并沉淀了完整的项目文档体系。
+5.  **辅助工程化与交付**：编写项目 README、自动化聊天导出脱敏工具 (`tool/convert_chat.py`)，整理项目文档体系。
 
-## 9. AI Coding 反思 (Retrospective)
+## 9. AI Coding 反思
 在系统从“初始 Python 纯内存数据结构”向“SQLite 本地文件数据库”演进、及拆分工程文件和撰写核心业务防崩溃功能的过程中，我们积累了以下结对开发经验与反思：
 
 1.  **AI 工具对架构瓶颈发现与演进把控的最佳实践**：
