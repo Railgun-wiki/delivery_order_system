@@ -1,9 +1,14 @@
 ﻿import json
 import sys
+import os
 
 def convert():
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    input_file = os.path.join(base_dir, 'chat.json')
+    output_file = os.path.join(base_dir, 'doc', 'chat_exported.md')
+
     try:
-        with open('chat.json', 'r', encoding='utf-8') as f:
+        with open(input_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
             
         md_lines = ["# Chat Export\n"]
@@ -32,9 +37,9 @@ def convert():
                 if resp_text.strip():
                     md_lines.append(f"{resp_text}\n")
                 
-        with open('chat_exported.md', 'w', encoding='utf-8') as mf:
+        with open(output_file, 'w', encoding='utf-8') as mf:
             mf.write('\n'.join(md_lines))
-        print("Converted successfully to chat_exported.md with thinking stripped!")
+        print(f"Converted successfully to {os.path.relpath(output_file, base_dir)} with thinking stripped!")
     except Exception as e:
         print(f"Error: {e}")
 
